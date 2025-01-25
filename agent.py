@@ -1,24 +1,10 @@
 
 """
-Version: 1.1
+Version: 1.2
 
-1. Implementing target network 
+1. Implementing Backward propogation and gradient descent
 
 --Minor changes by me
-
-1. I changed the reward to a tensor
-    #new
-    reward = torch.tensor(reward, device = device)
-
-    #original
-    reward = reward
-
-2. Problems: 
-    1. unsure if this is even correct,
-        #new 
-        current_q = policy_dqn(state).gather(dim = 0, index = action.unsqueeze(0))
-        #original 
-        current_q = policy_dqn(state)
 
 --Minor changes by me
 """
@@ -39,6 +25,8 @@ from dqn import DQN
 
 #check if gpu calculation is supported for tensorflow
 device = "cuda" if torch.cuda.is_available() else "cpu"
+# if u wanna force use cpu
+#device = "cpu"
 
 class Agent:
     def __init__(self, hyperparameters_sets):
@@ -98,9 +86,6 @@ class Agent:
             # q: what does this network optimizer does
             # the policy_dqn.parameters() is the parameters that we want to optimize
             self.optimizer = torch.optim.Adam(policy_dqn.parameters(), lr = self.learning_rate_a)
-
-
-            
         
         for episode in itertools.count():
             state, _ = env.reset()
@@ -154,7 +139,7 @@ class Agent:
                 # sample form memory
                 mini_batch = memory.sample(self.mini_batch_size)
 
-                # q: do not understandw hat does this mean
+                # q: do not understand hat does this mean
                 self.optimize(mini_batch, policy_dqn, target_dqn)
 
                 # copy policy network to target network after a certain number of steps
@@ -166,37 +151,53 @@ class Agent:
                  
     # updating the q value
     def optimize(self, mini_batch, policy_dqn, target_dqn):
-        for state, action, new_state, reward, terminated in mini_batch:
+        
+        # Transpose the list of experiences and separate each element
 
-            #make the reward as tensor, edited by me
-            reward = torch.tensor(reward, device = device)
+        states, actions, new_states, rewards, terminations = zip(*mini_batch)
 
-            if terminated:
-                #make it a tensor
-                target_q  = reward
-                print(f"From if target_q = {target_q}")
-            else:
-                with torch.no_grad():
-                    target_q = reward + self.discount_factor_g * target_dqn(new_state).max()
-                    print(f"From else target_q = {target_q}")
+        # Stack tensors to create batch tensors
+
+        states = torch.stack(states)
+
+        actions = torch.stack(actions)
+
+        new_states = torch.stack(new_states)
+        
+        
+        # edited by me, to convert the tuple of floats to a tuple of tensor
+        # this is to ensure that rewards = torch,stack(rewards works)
+        rewards = tuple(torch.tensor(reward, dtype = torch.float, device = device) for reward in rewards)
+        rewards = torch.stack(rewards)
+
+        terminations = torch.tensor(terminations).float().to(device)
+
+        with torch.no_grad():
+            # Compute the target q value
+            # if terminated, then target_q = rewards
+            # else target_q = rewards +  discount_factor_g * target_dqn(new_states).max(dim = 1).values
+            target_q = rewards + ( 1- terminations ) * self.discount_factor_g * target_dqn(new_states).max(dim = 1).values
+            '''
+                target_dqn(new_states)  ==> tensor([[1,2,3],[4,5,6]])
+                    .max(dim=1)         ==> torch.return_types.max(values=tensor([3,6]), indices=tensor([3, 0, 0, 1]))
+                        [0]             ==> tensor([3,6])
+            '''
+        # Calcuate Q values from current policy
+        current_q = policy_dqn(states).gather(dim=1, index=actions.unsqueeze(dim=1)).squeeze()
+        '''
+            policy_dqn(states)  ==> tensor([[1,2,3],[4,5,6]])
+                actions.unsqueeze(dim=1)
+                .gather(1, actions.unsqueeze(dim=1))  ==>
+                    .squeeze()                    ==>
+        '''
                 
-            # original
-            #urrent_q = policy_dqn(state)
+        #compute loss for the whole minibatch
+        loss = self.loss_fn(current_q, target_q) 
 
-            #new, edited by me
-            #q : unsure if it is even correct : blue 
-            current_q = policy_dqn(state).gather(dim = 0, index = action.unsqueeze(0))
-
-            
-            #compute loss for the whole minibatch
-            loss = self.loss_fn(current_q, target_q)
-            print(f"target_q.dtype = {target_q.dtype}")
-            print(f"current_q.dtype = {current_q.dtype}")
-
-            #Optimize the model
-            self.optimizer.zero_grad() #clear gradient
-            loss.backward()            #compute gradient (backpropagation)
-            self.optimizer.step()      #Update network parameters i.e. weights and biases
+        #Optimize the model
+        self.optimizer.zero_grad() #clear gradient
+        loss.backward()            #compute gradient (backpropagation)
+        self.optimizer.step()      #Update network parameters i.e. weights and biases
 
         
 
