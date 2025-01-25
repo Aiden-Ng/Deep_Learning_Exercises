@@ -1,18 +1,38 @@
 
 """
-Version: 1.0
+Version: 1.1
 
-1. This is a single DQN agent 
-2. Run and managed to compile the code
+1. Implementing target network 
+
+--Minor changes by me
+
+1. I changed the reward to a tensor
+    #new
+    reward = torch.tensor(reward, device = device)
+
+    #original
+    reward = reward
+
+2. Problems: 
+    1. unsure if this is even correct,
+        #new 
+        current_q = policy_dqn(state).gather(dim = 0, index = action.unsqueeze(0))
+        #original 
+        current_q = policy_dqn(state)
+
+--Minor changes by me
 """
 
-import flappy_bird_gymnasium
+
 import gymnasium
+import flappy_bird_gymnasium
 import torch
+from torch import nn
 from experience_replay import ReplayMemory
 import itertools
 import yaml
 import random
+
 
 
 from dqn import DQN
@@ -31,6 +51,12 @@ class Agent:
         self.epsilon_init = hyperparameters["epsilon_init"]
         self.epsilon_decay = hyperparameters["epsilon_decay"]
         self.epsilon_min = hyperparameters["epsilon_min"]
+        self.network_sync_rate = hyperparameters["network_sync_rate"]
+        self.learning_rate_a = hyperparameters["learning_rate_a"]
+        self.discount_factor_g = hyperparameters["discount_factor_g"]
+
+        self.loss_fn = nn.MSELoss()
+        self.optimizer = None
         
     
     def run(self, is_training = True, render = False):
@@ -59,6 +85,22 @@ class Agent:
             memory = ReplayMemory(self.replay_memory_size)
 
             epsilon = self.epsilon_init
+
+            target_dqn = DQN(num_states, num_actions).to(device)
+            # sync the target network to the policy network
+            # copies all the weights and biases into the target network
+            target_dqn.load_state_dict(policy_dqn.state_dict())
+
+            # count how many steps that have been taken
+            step_count = 0
+
+            # policy network optimizer. "Adam" optimizer can be swapped to something else
+            # q: what does this network optimizer does
+            # the policy_dqn.parameters() is the parameters that we want to optimize
+            self.optimizer = torch.optim.Adam(policy_dqn.parameters(), lr = self.learning_rate_a)
+
+
+            
         
         for episode in itertools.count():
             state, _ = env.reset()
@@ -94,6 +136,9 @@ class Agent:
 
                 if is_training:
                     memory.append((state, action, new_state, reward, terminated))
+
+                    # increment step count
+                    step_count += 1
                 
                 # move to new state
                 state = new_state
@@ -103,7 +148,56 @@ class Agent:
 
             epsilon = max(epsilon * self.epsilon_decay, self.epsilon_min)
             epsilon_history.append(epsilon)
-        
+
+            #if enough the experience have been loaded
+            if len(memory) > self.mini_batch_size:
+                # sample form memory
+                mini_batch = memory.sample(self.mini_batch_size)
+
+                # q: do not understandw hat does this mean
+                self.optimize(mini_batch, policy_dqn, target_dqn)
+
+                # copy policy network to target network after a certain number of steps
+                if step_count > self.network_sync_rate:
+                    # copy the policy network to the target network
+                    target_dqn.load_state_dict(policy_dqn.state_dict())
+                    step_count = 0
+
+                 
+    # updating the q value
+    def optimize(self, mini_batch, policy_dqn, target_dqn):
+        for state, action, new_state, reward, terminated in mini_batch:
+
+            #make the reward as tensor, edited by me
+            reward = torch.tensor(reward, device = device)
+
+            if terminated:
+                #make it a tensor
+                target_q  = reward
+                print(f"From if target_q = {target_q}")
+            else:
+                with torch.no_grad():
+                    target_q = reward + self.discount_factor_g * target_dqn(new_state).max()
+                    print(f"From else target_q = {target_q}")
+                
+            # original
+            #urrent_q = policy_dqn(state)
+
+            #new, edited by me
+            #q : unsure if it is even correct : blue 
+            current_q = policy_dqn(state).gather(dim = 0, index = action.unsqueeze(0))
+
+            
+            #compute loss for the whole minibatch
+            loss = self.loss_fn(current_q, target_q)
+            print(f"target_q.dtype = {target_q.dtype}")
+            print(f"current_q.dtype = {current_q.dtype}")
+
+            #Optimize the model
+            self.optimizer.zero_grad() #clear gradient
+            loss.backward()            #compute gradient (backpropagation)
+            self.optimizer.step()      #Update network parameters i.e. weights and biases
+
         
 
 if __name__ == "__main__":
