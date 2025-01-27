@@ -1,32 +1,54 @@
 
 """
-Version: 1.2
+Version: 1.3
+Video number 8
+1. Test the DQN algorithm on cartpole-v1
 
-1. Implementing Backward propogation and gradient descent
+--Minor changes by me
 
 --Minor changes by me
 
---Minor changes by me
+Notes: 
+1. Recheck the epsilon array
 """
 
-
 import gymnasium
-import flappy_bird_gymnasium
+import numpy as np
+
+import matplotlib 
+import matplotlib.pyplot as plt
+
+import random
 import torch
 from torch import nn
-from experience_replay import ReplayMemory
-import itertools
 import yaml
-import random
 
-
-
+from experience_replay import ReplayMemory
 from dqn import DQN
+
+from datetime import datetime, timedelta
+import argparse
+import itertools
+
+import flappy_bird_gymnasium
+import os
+
+# for printing date and time 
+DATE_FORMAT = "%m-%d %H:%M:%S"
+
+#Directory for saving run info
+curr_dir = os.path.abspath(os.path.dirname(__file__))
+RUNS_DIR = "run"
+os.makedirs(f"{curr_dir}/{RUNS_DIR}", exist_ok = True)
+
+# "Agg" : used to generate plot as images nad save them to a file instead of rendering to screen
+# Agg is a non-interactive back-end
+matplotlib.use("Agg")
 
 #check if gpu calculation is supported for tensorflow
 device = "cuda" if torch.cuda.is_available() else "cpu"
 # if u wanna force use cpu
-#device = "cpu"
+device = "cpu"
 
 class Agent:
     def __init__(self, hyperparameters_sets):
@@ -34,20 +56,44 @@ class Agent:
             all_hyperparameters_sets = yaml.safe_load(file)
             hyperparameters = all_hyperparameters_sets[hyperparameters_sets]
           
-        self.replay_memory_size = hyperparameters["replay_memory_size"]
-        self.mini_batch_size = hyperparameters["mini_batch_size"]
-        self.epsilon_init = hyperparameters["epsilon_init"]
-        self.epsilon_decay = hyperparameters["epsilon_decay"]
-        self.epsilon_min = hyperparameters["epsilon_min"]
-        self.network_sync_rate = hyperparameters["network_sync_rate"]
-        self.learning_rate_a = hyperparameters["learning_rate_a"]
-        self.discount_factor_g = hyperparameters["discount_factor_g"]
+        self.hyperparameters_sets = hyperparameters_sets
+
+        # Hyperparameters (adjustable)
+        self.env_id             = hyperparameters['env_id']
+        self.learning_rate_a    = hyperparameters['learning_rate_a']        # learning rate (alpha)
+        self.discount_factor_g  = hyperparameters['discount_factor_g']      # discount rate (gamma)
+        self.network_sync_rate  = hyperparameters['network_sync_rate']      # number of steps the agent takes before syncing the policy and target network
+        self.replay_memory_size = hyperparameters['replay_memory_size']     # size of replay memory
+        self.mini_batch_size    = hyperparameters['mini_batch_size']        # size of the training data set sampled from the replay memory
+        self.epsilon_init       = hyperparameters['epsilon_init']           # 1 = 100% random actions
+        self.epsilon_decay      = hyperparameters['epsilon_decay']          # epsilon decay rate
+        self.epsilon_min        = hyperparameters['epsilon_min']            # minimum epsilon value
+        self.stop_on_reward     = hyperparameters['stop_on_reward']         # stop training after reaching this number of rewards
+        self.fc1_nodes          = hyperparameters['fc1_nodes']
+        self.env_make_params    = hyperparameters.get('env_make_params',{}) # Get optional environment-specific parameters, default to empty dict
+        
 
         self.loss_fn = nn.MSELoss()
         self.optimizer = None
+
+        # Path to run info
+        # what does os.path.join does
+        # it joins the path with the file name
+        self.LOG_FILE = os.path.join(f"{curr_dir}/{RUNS_DIR}", f"{self.hyperparameters_sets}.log")
+        self.MODEL_FILE = os.path.join(f"{curr_dir}/{RUNS_DIR}", f"{self.hyperparameters_sets}.pt") # this is a pytorch file
+        self.GRAPH_FILE = os.path.join(f"{curr_dir}/{RUNS_DIR}", f"{self.hyperparameters_sets}.png")
         
     
     def run(self, is_training = True, render = False):
+        if is_training:
+            start_time = datetime.now()
+            last_graph_update_time = start_time
+
+            log_message = f"{start_time.strftime(DATE_FORMAT)}: Training starting..."
+            print(log_message)
+            with open(self.LOG_FILE, 'w') as file:
+                file.write(log_message + '\n')
+        
         #env = gymnasium.make("FlappyBird-v0", render_mode="human", use_lidar=False)
         env = gymnasium.make("CartPole-v1", render_mode="human" if render else None)
          
@@ -59,9 +105,6 @@ class Agent:
 
         # list to contain the rewards per episode
         rewards_per_episode = []
-
-        # list to store the epsilon histories
-        epsilon_history = []
 
         #q:  what does this does?
         #a:  it initializes the policy network
@@ -79,6 +122,9 @@ class Agent:
             # copies all the weights and biases into the target network
             target_dqn.load_state_dict(policy_dqn.state_dict())
 
+            # list to store the epsilon histories
+            epsilon_history = []
+            
             # count how many steps that have been taken
             step_count = 0
 
@@ -86,6 +132,17 @@ class Agent:
             # q: what does this network optimizer does
             # the policy_dqn.parameters() is the parameters that we want to optimize
             self.optimizer = torch.optim.Adam(policy_dqn.parameters(), lr = self.learning_rate_a)
+
+            # track best rewards
+            best_reward = -999999
+        
+        else:
+            # load learned policy
+            policy_dqn.load_state_dict(torch.load(self.MODEL_FILE))
+
+            # switch model to evaluation mode
+            policy_dqn.eval()
+
         
         for episode in itertools.count():
             state, _ = env.reset()
@@ -96,7 +153,7 @@ class Agent:
             terminated = False
             episode_reward = 0.0
 
-            while not terminated:
+            while (not terminated and episode_reward < self.stop_on_reward):
                 # Next action:
                 # (feed the observation to your agent here)
                 if is_training and random.random() < epsilon:
@@ -112,7 +169,8 @@ class Agent:
                         action = policy_dqn(state.unsqueeze(dim = 0)).squeeze().argmax()
 
                 # Processing:
-                new_state, reward, terminated, _, info = env.step(action.item())
+                # Execute action. Truncated and info not used
+                new_state, reward, terminated, truncated, info = env.step(action.item())
 
                 # accumulate the reward
                 episode_reward += reward
@@ -129,26 +187,70 @@ class Agent:
                 state = new_state
             
             rewards_per_episode.append(episode_reward)
-            print(episode_reward)
 
-            epsilon = max(epsilon * self.epsilon_decay, self.epsilon_min)
-            epsilon_history.append(epsilon)
+            # Save the model when new best reward is obtained
+            if is_training:
+                if episode_reward > best_reward:
+                    log_message = f"{datetime.now().strftime(DATE_FORMAT)}: New best reward {episode_reward:0.1f} ({(episode_reward-best_reward)/best_reward*100:+.1f}%) at episode {episode}, saving model..."
+                    print(log_message)
+                    with open(self.LOG_FILE, 'a') as file:
+                        file.write(log_message + '\n')
 
-            #if enough the experience have been loaded
-            if len(memory) > self.mini_batch_size:
-                # sample form memory
-                mini_batch = memory.sample(self.mini_batch_size)
+                    torch.save(policy_dqn.state_dict(), self.MODEL_FILE)
+                    best_reward = episode_reward
+            
+                # Update graph every x seconds
+                current_time = datetime.now()
+                if current_time - last_graph_update_time > timedelta(seconds=10):
+                    self.save_graph(rewards_per_episode, epsilon_history)
+                    last_graph_update_time = current_time
+            
+                #if enough the experience have been loaded
+                if len(memory) > self.mini_batch_size:
+                    # sample form memory
+                    mini_batch = memory.sample(self.mini_batch_size)
 
-                # q: do not understand hat does this mean
-                self.optimize(mini_batch, policy_dqn, target_dqn)
+                    # q: do not understand hat does this mean
+                    self.optimize(mini_batch, policy_dqn, target_dqn)
 
-                # copy policy network to target network after a certain number of steps
-                if step_count > self.network_sync_rate:
-                    # copy the policy network to the target network
-                    target_dqn.load_state_dict(policy_dqn.state_dict())
-                    step_count = 0
+                    # Decay epsilon QUESTION, might not work
+                    epsilon = max(epsilon * self.epsilon_decay, self.epsilon_min)
+                    epsilon_history.append(epsilon)
 
-                 
+
+                    # copy policy network to target network after a certain number of steps
+                    if step_count > self.network_sync_rate:
+                        # copy the policy network to the target network
+                        target_dqn.load_state_dict(policy_dqn.state_dict())
+                        step_count = 0
+
+
+    def save_graph(self, rewards_per_episode, epsilon_history):
+        # Save plots
+        fig = plt.figure(1)
+
+        # Plot average rewards (Y-axis) vs episodes (X-axis)
+        mean_rewards = np.zeros(len(rewards_per_episode))
+        for x in range(len(mean_rewards)):
+            mean_rewards[x] = np.mean(rewards_per_episode[max(0, x-99):(x+1)])
+        plt.subplot(121) # plot on a 1 row x 2 col grid, at cell 1
+        # plt.xlabel('Episodes')
+        plt.ylabel('Mean Rewards')
+        plt.plot(mean_rewards)
+
+        # Plot epsilon decay (Y-axis) vs episodes (X-axis)
+        plt.subplot(122) # plot on a 1 row x 2 col grid, at cell 2
+        # plt.xlabel('Time Steps')
+        plt.ylabel('Epsilon Decay')
+        plt.plot(epsilon_history)
+
+        plt.subplots_adjust(wspace=1.0, hspace=1.0)
+
+        # Save plots
+        fig.savefig(self.GRAPH_FILE)
+        plt.close(fig)
+
+
     # updating the q value
     def optimize(self, mini_batch, policy_dqn, target_dqn):
         
@@ -202,6 +304,17 @@ class Agent:
         
 
 if __name__ == "__main__":
-    agent = Agent("cartpole1")
-    agent.run(is_training = True, render = True)
+    # Parse command line inputs
+    parser = argparse.ArgumentParser(description='Train or Test models')
+    parser.add_argument("hyperparameters", help = "")
+    parser.add_argument("--train", help = "Training mode", action="store_true")
+    args = parser.parse_args()
+
+    dql = Agent(hyperparameters_sets = args.hyperparameters)
+
+    if args.train:
+        dql.run(is_training= True)
+    else: 
+        dql.run(is_training= False, render = True)
+
 
