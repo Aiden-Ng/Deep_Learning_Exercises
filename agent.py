@@ -1,8 +1,8 @@
 
 """
-Version: 1.3
-Video number 8
-1. Test the DQN algorithm on cartpole-v1
+Version: 1.4
+Video number 9
+1. Test the DQN algorithm on flappybird_v0
 
 --Minor changes by me
 
@@ -71,6 +71,9 @@ class Agent:
         self.stop_on_reward     = hyperparameters['stop_on_reward']         # stop training after reaching this number of rewards
         self.fc1_nodes          = hyperparameters['fc1_nodes']
         self.env_make_params    = hyperparameters.get('env_make_params',{}) # Get optional environment-specific parameters, default to empty dict
+
+        # the right side is the deafult value if it is not found in the dictionary
+        self.use_lidar = hyperparameters['env_make_params'].get('use_lidar', None)
         
 
         self.loss_fn = nn.MSELoss()
@@ -95,7 +98,8 @@ class Agent:
                 file.write(log_message + '\n')
         
         #env = gymnasium.make("FlappyBird-v0", render_mode="human", use_lidar=False)
-        env = gymnasium.make("CartPole-v1", render_mode="human" if render else None)
+        env = gymnasium.make(self.env_id , render_mode="human" if render else None, use_lidar = self.use_lidar)
+        
          
         #number of states
         num_states = env.observation_space.shape[0]
@@ -143,8 +147,8 @@ class Agent:
             # switch model to evaluation mode
             policy_dqn.eval()
 
-        
         for episode in itertools.count():
+            
             state, _ = env.reset()
             
             #it seems like tensor is a data struct that is used for gpu computations
@@ -313,7 +317,7 @@ if __name__ == "__main__":
     dql = Agent(hyperparameters_sets = args.hyperparameters)
 
     if args.train:
-        dql.run(is_training= True)
+        dql.run(is_training= True, render = False)
     else: 
         dql.run(is_training= False, render = True)
 
